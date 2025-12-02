@@ -1,10 +1,13 @@
 # Virtual Environment
 venv/
 env/
+.venv/
 
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
 # Database file
 *.sqlite3
@@ -13,7 +16,31 @@ db.sqlite3
 # Static and media files
 /static/
 /media/
+staticfiles/
 
-# Secrets (if you use a .env file)
+# Secrets and environment files - NEVER COMMIT THESE
 .env
 *.env
+.env.local
+.env.production
+secrets.py
+local_settings.py
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Coverage
+htmlcov/
+.coverage
+.pytest_cache/
