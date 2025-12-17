@@ -326,3 +326,37 @@ def register_view(request):
             'success': False,
             'error': str(e)
         }, status=500)
+
+
+# ============== Monitoring Test Endpoints ==============
+
+@require_http_methods(["GET"])
+def test_error_400(request):
+    """Test endpoint that returns 400 Bad Request"""
+    return JsonResponse({
+        'success': False,
+        'error': 'Test 400 Bad Request error for monitoring'
+    }, status=400)
+
+
+@require_http_methods(["GET"])
+def test_error_500(request):
+    """Test endpoint that returns 500 Internal Server Error"""
+    return JsonResponse({
+        'success': False,
+        'error': 'Test 500 Internal Server Error for monitoring'
+    }, status=500)
+
+
+@require_http_methods(["GET"])
+def test_slow(request):
+    """Test endpoint with artificial delay for latency testing"""
+    import time
+    import random
+    # Random delay between 0.5 and 2 seconds
+    delay = random.uniform(0.5, 2.0)
+    time.sleep(delay)
+    return JsonResponse({
+        'success': True,
+        'message': f'Slow response after {delay:.2f}s delay'
+    })

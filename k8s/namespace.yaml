@@ -1,7 +1,8 @@
+# Namespace for Pour Your Mind application
 apiVersion: v1
 kind: Namespace
 metadata:
   name: pour-your-mind
   labels:
-    name: pour-your-mind
-
+    app: pour-your-mind
+    environment: production

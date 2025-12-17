@@ -16,4 +16,9 @@ urlpatterns = [
     path('api/auth/logout/', views.logout_view, name='logout'),
     path('api/auth/register/', views.register_view, name='register'),
     path('api/auth/user/', views.current_user, name='current_user'),
+    
+    # Monitoring test endpoints
+    path('api/test/error-400/', views.test_error_400, name='test_error_400'),
+    path('api/test/error-500/', views.test_error_500, name='test_error_500'),
+    path('api/test/slow/', views.test_slow, name='test_slow'),
 ]

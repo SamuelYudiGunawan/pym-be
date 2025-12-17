@@ -1,223 +1,266 @@
-# Pour Your Mind - Kubernetes Deployment
+# Pour Your Mind - Kubernetes Deployment on Oracle Cloud OKE
 
-This directory contains all the Kubernetes manifests needed to deploy the "Pour Your Mind" application to a Kubernetes cluster.
+This guide walks you through deploying Pour Your Mind to Oracle Cloud Kubernetes Engine (OKE) for free.
 
-## Prerequisites
+## 🏗️ Architecture
 
-1. **Kubernetes cluster** (local or cloud)
-2. **kubectl** configured to connect to your cluster
-3. **Docker image** built and pushed to a registry
-
-## Architecture
-
-The deployment includes:
-
-- **PostgreSQL Database** - Persistent storage for the application
-- **Django Application** - Main API server with 3 replicas
-- **Nginx** - Reverse proxy and load balancer
-- **Ingress** - External access to the application
-- **HPA** - Horizontal Pod Autoscaler for automatic scaling
-
-## Quick Start
-
-### 1. Build and Push Docker Image
-
-First, you need to build and push your Docker image to a registry:
-
-```bash
-# Build the image
-docker build -t pour-your-mind:latest .
-
-# Tag for your registry (replace with your registry)
-docker tag pour-your-mind:latest your-registry.com/pour-your-mind:latest
-
-# Push to registry
-docker push your-registry.com/pour-your-mind:latest
+```
+                         Internet
+                            │
+        ┌───────────────────┴───────────────────┐
+        │                                       │
+        ▼                                       ▼
+┌───────────────────┐               ┌───────────────────┐
+│   OCI Load        │               │   OCI Load        │
+│   Balancer        │               │   Balancer        │
+│   (Frontend)      │               │   (Backend API)   │
+│   Port 80         │               │   Port 80         │
+└─────────┬─────────┘               └─────────┬─────────┘
+          │                                   │
+          ▼                                   ▼
+┌─────────────────────────────────────────────────────────┐
+│                    OKE Cluster                          │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────────┐   │
+│  │ SvelteKit   │ │ Django      │ │  PostgreSQL     │   │
+│  │ Frontend    │ │ Backend     │ │  Database       │   │
+│  │ (2 pods)    │ │ (2 pods)    │ │  (1 pod + PVC)  │   │
+│  └─────────────┘ └─────────────┘ └─────────────────┘   │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │     Ampere A1 Worker Nodes (Always Free!)       │   │
+│  └─────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 2. Update Image Reference
+## 📋 Prerequisites
 
-Edit `django-deployment.yaml` and update the image reference:
+1. **Oracle Cloud Account** (Free tier)
+   - Go to [cloud.oracle.com/free](https://www.oracle.com/cloud/free/)
+   - Sign up (no credit card required for most regions)
 
+2. **Tools installed locally**:
+   - Docker Desktop
+   - kubectl
+   - OCI CLI
+
+## 🚀 Step-by-Step Deployment
+
+### Step 1: Create OKE Cluster
+
+1. Go to Oracle Cloud Console → **Developer Services** → **Kubernetes Clusters (OKE)**
+2. Click **Create Cluster** → **Quick Create**
+3. Configure:
+   - **Name**: `pym-cluster`
+   - **Kubernetes Version**: Latest
+   - **Shape**: `VM.Standard.A1.Flex` (FREE!)
+   - **OCPUs**: 2
+   - **Memory**: 12 GB
+   - **Number of Nodes**: 2
+4. Click **Next** → **Create Cluster**
+5. Wait ~10 minutes for cluster to be ready
+
+### Step 2: Configure kubectl
+
+```powershell
+# Install OCI CLI (if not installed)
+# Windows PowerShell:
+Invoke-WebRequest https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.ps1 -OutFile install.ps1
+.\install.ps1 -AcceptAllDefaults
+
+# Configure OCI CLI
+oci setup config
+
+# Get kubeconfig for your cluster
+# Find cluster OCID in OKE console
+oci ce cluster create-kubeconfig `
+    --cluster-id <your-cluster-ocid> `
+    --file $HOME\.kube\config `
+    --region <your-region> `
+    --token-version 2.0.0
+
+# Verify connection
+kubectl get nodes
+```
+
+### Step 3: Set Up Container Registry (OCIR)
+
+1. Go to **Developer Services** → **Container Registry**
+2. Create two repositories:
+   - `pym-backend`
+   - `pym-frontend`
+
+3. Create Auth Token:
+   - Profile → **User Settings** → **Auth Tokens** → **Generate Token**
+   - **Save the token!** (you can only see it once)
+
+4. Login to OCIR:
+```powershell
+# Format: <region-key>.ocir.io
+docker login <region>.ocir.io
+# Username: <namespace>/<email>
+# Password: <auth-token>
+```
+
+### Step 4: Build and Push Docker Images
+
+```powershell
+# Navigate to project root
+cd F:\PourYourMind
+
+# Build and push backend
+cd pym_be
+docker build -t <region>.ocir.io/<namespace>/pym-backend:v1 .
+docker push <region>.ocir.io/<namespace>/pym-backend:v1
+
+# Build and push frontend
+cd ../pym_fe
+docker build -t <region>.ocir.io/<namespace>/pym-frontend:v1 .
+docker push <region>.ocir.io/<namespace>/pym-frontend:v1
+```
+
+### Step 5: Create Kubernetes Secrets
+
+```powershell
+# Create namespace
+kubectl apply -f pym_be/k8s/namespace.yaml
+
+# Create OCI registry secret
+kubectl create secret docker-registry oci-registry-secret `
+    --namespace=pour-your-mind `
+    --docker-server=<region>.ocir.io `
+    --docker-username='<namespace>/<email>' `
+    --docker-password='<auth-token>' `
+    --docker-email='<email>'
+```
+
+### Step 6: Update Image References
+
+Edit the deployment files to use your OCI images:
+
+**pym_be/k8s/django-deployment.yaml**:
 ```yaml
-image: your-registry.com/pour-your-mind:latest
+image: <region>.ocir.io/<namespace>/pym-backend:v1
 ```
 
-### 3. Deploy to Kubernetes
+**pym_fe/k8s/deployment.yaml**:
+```yaml
+image: <region>.ocir.io/<namespace>/pym-frontend:v1
+```
 
-```bash
-# Deploy everything
-./deploy.sh
+### Step 7: Deploy Everything
 
-# Or deploy manually
+```powershell
+# From pym_be/k8s directory
+cd pym_be/k8s
+
+# Apply all manifests
 kubectl apply -f namespace.yaml
 kubectl apply -f configmap.yaml
 kubectl apply -f secret.yaml
-kubectl apply -f nginx-configmap.yaml
 kubectl apply -f postgres-pvc.yaml
 kubectl apply -f postgres-deployment.yaml
 kubectl apply -f django-deployment.yaml
-kubectl apply -f nginx-deployment.yaml
-kubectl apply -f ingress.yaml
-kubectl apply -f hpa.yaml
+
+# Wait for backend to be ready
+kubectl wait --for=condition=available --timeout=180s deployment/django-app -n pour-your-mind
+
+# Deploy frontend
+kubectl apply -f ../../pym_fe/k8s/configmap.yaml
+kubectl apply -f ../../pym_fe/k8s/deployment.yaml
 ```
 
-### 4. Access the Application
+### Step 8: Get LoadBalancer IPs
 
-```bash
-# Port forward to access locally
-kubectl port-forward -n pour-your-mind service/nginx-service 8080:80
+```powershell
+# Watch services for external IPs
+kubectl get services -n pour-your-mind -w
 
-# Open http://localhost:8080 in your browser
+# You'll see output like:
+# NAME               TYPE           CLUSTER-IP     EXTERNAL-IP     PORT(S)
+# django-service     LoadBalancer   10.x.x.x       129.x.x.x       80:xxxxx/TCP
+# frontend-service   LoadBalancer   10.x.x.x       130.x.x.x       80:xxxxx/TCP
 ```
 
-## Configuration
+### Step 9: Access Your App
 
-### Environment Variables
+- **Frontend**: `http://<frontend-external-ip>`
+- **Backend API**: `http://<backend-external-ip>/api/notes/`
 
-Update `configmap.yaml` and `secret.yaml` with your configuration:
+## 🔄 Updating Deployments
 
-```yaml
-# configmap.yaml
-data:
-  DEBUG: "0"
-  POSTGRES_DB: "pym_db"
-  POSTGRES_USER: "pym_user"
-  DB_HOST: "postgres-service"
-  DB_PORT: "5432"
+After getting the LoadBalancer IPs, rebuild with the correct API URL:
 
-# secret.yaml
-data:
-  POSTGRES_PASSWORD: <base64-encoded-password>
-  SECRET_KEY: <base64-encoded-secret-key>
+```powershell
+# Rebuild frontend with backend URL
+cd pym_fe
+docker build --build-arg VITE_API_URL=http://<backend-ip>/api -t <region>.ocir.io/<namespace>/pym-frontend:v2 .
+docker push <region>.ocir.io/<namespace>/pym-frontend:v2
+
+# Update deployment
+kubectl set image deployment/frontend-app sveltekit=<region>.ocir.io/<namespace>/pym-frontend:v2 -n pour-your-mind
 ```
 
-### Storage
+## 📊 Useful Commands
 
-The PostgreSQL database uses a PersistentVolumeClaim. Update `postgres-pvc.yaml`:
-
-```yaml
-spec:
-  storageClassName: your-storage-class # Change this
-  resources:
-    requests:
-      storage: 10Gi # Adjust size as needed
-```
-
-### Ingress
-
-Update `ingress.yaml` with your domain:
-
-```yaml
-spec:
-  rules:
-    - host: your-domain.com # Change this
-```
-
-## Monitoring and Management
-
-### Check Deployment Status
-
-```bash
-# Check all resources
+```powershell
+# View all resources
 kubectl get all -n pour-your-mind
 
-# Check pods
-kubectl get pods -n pour-your-mind
+# View pod logs
+kubectl logs -l app=django-app -n pour-your-mind
+kubectl logs -l app=frontend-app -n pour-your-mind
 
-# Check services
-kubectl get services -n pour-your-mind
+# Scale deployments
+kubectl scale deployment django-app --replicas=3 -n pour-your-mind
+kubectl scale deployment frontend-app --replicas=3 -n pour-your-mind
 
-# Check ingress
-kubectl get ingress -n pour-your-mind
-```
-
-### View Logs
-
-```bash
-# Django application logs
-kubectl logs -n pour-your-mind -l app=django-app
-
-# Nginx logs
-kubectl logs -n pour-your-mind -l app=nginx
-
-# PostgreSQL logs
-kubectl logs -n pour-your-mind -l app=postgres
-```
-
-### Scale Application
-
-```bash
-# Scale Django replicas
-kubectl scale deployment django-app -n pour-your-mind --replicas=5
-
-# Check HPA status
-kubectl get hpa -n pour-your-mind
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Image Pull Errors**
-
-   - Ensure your image is pushed to the registry
-   - Check image reference in `django-deployment.yaml`
-
-2. **Database Connection Issues**
-
-   - Verify PostgreSQL is running: `kubectl get pods -l app=postgres -n pour-your-mind`
-   - Check database credentials in secrets
-
-3. **Storage Issues**
-   - Verify storage class exists: `kubectl get storageclass`
-   - Check PVC status: `kubectl get pvc -n pour-your-mind`
-
-### Debug Commands
-
-```bash
-# Describe resources for detailed info
+# View pod details
 kubectl describe pod <pod-name> -n pour-your-mind
-kubectl describe service <service-name> -n pour-your-mind
 
-# Execute commands in pods
+# Execute command in pod
 kubectl exec -it <pod-name> -n pour-your-mind -- /bin/bash
 
-# Check events
-kubectl get events -n pour-your-mind --sort-by='.lastTimestamp'
+# Run Django migrations
+kubectl exec -it deployment/django-app -n pour-your-mind -- python manage.py migrate
+
+# Create Django superuser
+kubectl exec -it deployment/django-app -n pour-your-mind -- python manage.py createsuperuser
 ```
 
-## Cleanup
+## 🧹 Cleanup
 
 To remove all resources:
 
-```bash
-# Use the cleanup script
-./undeploy.sh
-
-# Or manually
+```powershell
 kubectl delete namespace pour-your-mind
 ```
 
-## Production Considerations
+## 💰 Free Tier Limits
 
-1. **Security**
+Oracle Cloud Always Free includes:
+- **OKE Control Plane**: FREE
+- **Ampere A1 Compute**: 4 OCPUs + 24GB RAM total (can split across nodes)
+- **Block Storage**: 200GB
+- **Load Balancer**: 1 flexible (10 Mbps)
+- **Object Storage**: 20GB
 
-   - Use proper secrets management (e.g., Kubernetes secrets, external secret operators)
-   - Enable RBAC
-   - Use network policies
+## 🔧 Troubleshooting
 
-2. **Monitoring**
+**Pods not starting?**
+```powershell
+kubectl describe pod <pod-name> -n pour-your-mind
+kubectl logs <pod-name> -n pour-your-mind
+```
 
-   - Add Prometheus and Grafana for monitoring
-   - Set up log aggregation (e.g., ELK stack)
+**Can't pull images?**
+- Verify OCI registry secret is created
+- Check image path matches exactly
+- Ensure auth token is valid
 
-3. **Backup**
+**Database connection errors?**
+- Wait for PostgreSQL pod to be ready first
+- Check configmap values match secret values
 
-   - Set up database backups
-   - Use Velero for cluster backups
-
-4. **SSL/TLS**
-   - Configure cert-manager for automatic SSL certificates
-   - Update ingress with TLS configuration
-
+**LoadBalancer pending?**
+- OCI LB provisioning can take 2-5 minutes
+- Check OCI console for LB status

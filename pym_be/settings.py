@@ -1,10 +1,10 @@
 """
 Django settings for pym_be project.
+Supports local development (SQLite) and Kubernetes/OKE deployment (PostgreSQL)
 """
 
 from pathlib import Path
 import os
-import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -13,32 +13,31 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ENVIRONMENT = os.environ.get('ENVIRONMENT', 'development')
 IS_PRODUCTION = ENVIRONMENT == 'production'
 
-# SECURITY: Secret key from environment variable only
-# In development, use a default; in production, MUST be set via env var
-SECRET_KEY = os.environ.get('SECRET_KEY')
-if not SECRET_KEY:
-    if IS_PRODUCTION:
-        raise ValueError(
-            "SECRET_KEY environment variable is required in production!")
-    else:
-        SECRET_KEY = 'dev-only-insecure-key-do-not-use-in-production'
+# Secret key - use environment variable or default for development
+SECRET_KEY = os.environ.get(
+    'SECRET_KEY', 'dev-only-insecure-key-change-in-production')
 
-# Debug mode - NEVER True in production
-DEBUG = not IS_PRODUCTION and os.environ.get('DEBUG', 'True') == 'True'
+# Debug mode - automatically False in production
+DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 'yes')
+if IS_PRODUCTION:
+    DEBUG = False
 
 # Allowed hosts
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(
+    ',') if os.environ.get('ALLOWED_HOSTS') else []
+ALLOWED_HOSTS += [
+    'localhost',
+    '127.0.0.1',
+    'backend',           # Docker service name for Prometheus scraping
+    'pym-backend',       # Docker container name
+    '.ngrok-free.app',
+    '.ngrok-free.dev',
+    '.ngrok.io',
+]
 
-# Add Render host
-RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-if RENDER_EXTERNAL_HOSTNAME:
-    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
-
-# In production, allow configured hosts
-if IS_PRODUCTION:
-    ALLOWED_HOSTS.extend([
-        '.onrender.com',  # Render domains
-    ])
+# For Kubernetes or Docker - allow any host
+if os.environ.get('KUBERNETES_SERVICE_HOST') or os.environ.get('ENVIRONMENT') == 'production':
+    ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -51,12 +50,14 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
+    'django_prometheus',  # Prometheus monitoring
     'notes',
 ]
 
 MIDDLEWARE = [
+    'django_prometheus.middleware.PrometheusBeforeMiddleware',  # Must be first
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',  # Serve static files
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -64,6 +65,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'django_prometheus.middleware.PrometheusAfterMiddleware',  # Must be last
 ]
 
 ROOT_URLCONF = 'pym_be.urls'
@@ -87,19 +89,28 @@ WSGI_APPLICATION = 'pym_be.wsgi.application'
 
 
 # Database configuration
-# Use DATABASE_URL in production (PostgreSQL), SQLite in development
+# Uses PostgreSQL in Kubernetes/production, SQLite for local development
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
-
-if DATABASE_URL:
+if os.environ.get('DATABASE_URL'):
+    # Use dj-database-url for DATABASE_URL format
+    import dj_database_url
     DATABASES = {
-        'default': dj_database_url.config(
-            default=DATABASE_URL,
-            conn_max_age=600,
-            conn_health_checks=True,
-        )
+        'default': dj_database_url.config(conn_max_age=600)
+    }
+elif os.environ.get('POSTGRES_DB'):
+    # Kubernetes environment with individual env vars
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('POSTGRES_DB', 'pym_db'),
+            'USER': os.environ.get('POSTGRES_USER', 'pym_user'),
+            'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
+            'HOST': os.environ.get('DB_HOST', 'postgres-service'),
+            'PORT': os.environ.get('DB_PORT', '5432'),
+        }
     }
 else:
+    # Local development with SQLite
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -138,24 +149,27 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # CORS Configuration
-# Frontend URL from environment variable
 
+# Frontend URL from environment (for Kubernetes)
 FRONTEND_URL = os.environ.get('FRONTEND_URL', '')
 
-# Development origins (always allowed in dev)
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
 ]
 
-# Add production frontend URL if set
+# Add frontend URL if specified
 if FRONTEND_URL:
     CORS_ALLOWED_ORIGINS.append(FRONTEND_URL)
 
-# Allow Vercel preview URLs (regex pattern)
+# Allow ngrok, Vercel, and OCI Load Balancer URLs (regex pattern)
 CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^https://.*\.ngrok-free\.app$",
+    r"^https://.*\.ngrok-free\.dev$",
+    r"^https://.*\.ngrok\.io$",
     r"^https://.*\.vercel\.app$",
+    r"^http://\d+\.\d+\.\d+\.\d+.*$",  # Allow IP addresses (OCI Load Balancer)
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -169,6 +183,7 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'ngrok-skip-browser-warning',
 ]
 
 
@@ -177,33 +192,65 @@ CORS_ALLOW_HEADERS = [
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "https://*.ngrok-free.app",
+    "https://*.ngrok-free.dev",
+    "https://*.ngrok.io",
+    "https://*.vercel.app",
 ]
 
+# Add frontend URL to CSRF trusted origins
 if FRONTEND_URL:
     CSRF_TRUSTED_ORIGINS.append(FRONTEND_URL)
 
-# Trust Vercel domains in production
-if IS_PRODUCTION:
-    # Add specific Vercel domain patterns
-    CSRF_TRUSTED_ORIGINS.extend([
-        "https://*.vercel.app",
-    ])
+# Add backend URL to CSRF trusted origins (for admin)
+BACKEND_URL = os.environ.get('BACKEND_URL', '')
+if BACKEND_URL:
+    CSRF_TRUSTED_ORIGINS.append(BACKEND_URL)
 
+# Cross-origin cookie settings
+# Use SECURE cookies only if USE_HTTPS env var is set
+USE_HTTPS = os.environ.get(
+    'USE_HTTPS', 'false').lower() in ('true', '1', 'yes')
 
-# Production Security Settings
-
-if IS_PRODUCTION:
-    # HTTPS settings
-    SECURE_SSL_REDIRECT = True
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-
-    # Cookie security for cross-origin requests
-    SESSION_COOKIE_SECURE = True
+if USE_HTTPS:
     SESSION_COOKIE_SAMESITE = 'None'
-    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SAMESITE = 'None'
+    CSRF_COOKIE_SECURE = True
+else:
+    # HTTP mode (no SSL) - for OKE without HTTPS
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SAMESITE = 'Lax'
+    CSRF_COOKIE_SECURE = False
 
-    # Additional security
-    SECURE_BROWSER_XSS_FILTER = True
-    SECURE_CONTENT_TYPE_NOSNIFF = True
-    X_FRAME_OPTIONS = 'DENY'
+
+# Logging configuration for Kubernetes
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': os.getenv('DJANGO_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+    },
+}

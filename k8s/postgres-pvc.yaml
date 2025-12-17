@@ -1,13 +1,17 @@
+# Persistent Volume Claim for PostgreSQL on Oracle Cloud OKE
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-pvc
   namespace: pour-your-mind
+  labels:
+    app: postgres
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: 10Gi
-  storageClassName: standard # Change this based on your cluster's storage class
-
+  # OKE uses oci-bv (Block Volume) as default storage class
+  # Comment out if using a different storage class
+  storageClassName: oci-bv

@@ -1,12 +1,20 @@
+# ConfigMap for Pour Your Mind application
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: pym-config
   namespace: pour-your-mind
 data:
-  DEBUG: "0"
+  # Django settings
+  DEBUG: "False"
+  ENVIRONMENT: "production"
+  
+  # PostgreSQL settings
   POSTGRES_DB: "pym_db"
   POSTGRES_USER: "pym_user"
   DB_HOST: "postgres-service"
   DB_PORT: "5432"
-
+  
+  # Frontend URL - Update this after deploying frontend
+  # This should be the LoadBalancer IP of your frontend service
+  FRONTEND_URL: "http://frontend-service"

@@ -1,3 +1,4 @@
+# PostgreSQL Deployment for Oracle Cloud OKE
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,21 +6,26 @@ metadata:
   namespace: pour-your-mind
   labels:
     app: postgres
+    tier: database
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: postgres
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
         app: postgres
+        tier: database
     spec:
       containers:
         - name: postgres
-          image: postgres:15
+          image: postgres:15-alpine
           ports:
             - containerPort: 5432
+              name: postgres
           env:
             - name: POSTGRES_DB
               valueFrom:
@@ -36,31 +42,56 @@ spec:
                 secretKeyRef:
                   name: pym-secrets
                   key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data
           resources:
             requests:
               memory: "256Mi"
-              cpu: "250m"
+              cpu: "100m"
             limits:
               memory: "512Mi"
               cpu: "500m"
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - pym_user
+                - -d
+                - pym_db
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - pym_user
+                - -d
+                - pym_db
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
         - name: postgres-storage
           persistentVolumeClaim:
             claimName: postgres-pvc
 ---
+# PostgreSQL Service
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres-service
   namespace: pour-your-mind
+  labels:
+    app: postgres
 spec:
   selector:
     app: postgres
   ports:
     - port: 5432
       targetPort: 5432
+      name: postgres
   type: ClusterIP
-

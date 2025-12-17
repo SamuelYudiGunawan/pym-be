@@ -1,3 +1,4 @@
+# Django Backend Deployment for Oracle Cloud OKE
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,8 +6,9 @@ metadata:
   namespace: pour-your-mind
   labels:
     app: django-app
+    tier: backend
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
       app: django-app
@@ -14,13 +16,23 @@ spec:
     metadata:
       labels:
         app: django-app
+        tier: backend
     spec:
+      # OCI Container Registry authentication
+      imagePullSecrets:
+        - name: oci-registry-secret
       containers:
         - name: django
-          image: pour-your-mind:latest
+          # Replace <region> and <namespace> with your OCI details
+          # Example: iad.ocir.io/mytenancy/pym-backend:v1
+          image: ap-batam-1.ocir.io/axhkc4lfalm6/pym-backend:v1
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
+              protocol: TCP
           env:
+            - name: ENVIRONMENT
+              value: "production"
             - name: DEBUG
               valueFrom:
                 configMapKeyRef:
@@ -56,41 +68,55 @@ spec:
                 secretKeyRef:
                   name: pym-secrets
                   key: SECRET_KEY
-          command: ["sh", "-c"]
-          args:
-            - |
-              python manage.py migrate &&
-              python manage.py collectstatic --noinput &&
-              gunicorn --bind 0.0.0.0:8000 --workers 3 pym_be.wsgi:application
+            - name: FRONTEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: pym-config
+                  key: FRONTEND_URL
           resources:
             requests:
               memory: "256Mi"
-              cpu: "250m"
+              cpu: "100m"
             limits:
               memory: "512Mi"
               cpu: "500m"
           livenessProbe:
             httpGet:
-              path: /api/about/
+              path: /api/notes/
               port: 8000
             initialDelaySeconds: 30
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /api/about/
+              path: /api/notes/
               port: 8000
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
 ---
+# Django Service - LoadBalancer for external access on OKE
 apiVersion: v1
 kind: Service
 metadata:
   name: django-service
   namespace: pour-your-mind
+  labels:
+    app: django-app
+  annotations:
+    # OCI Load Balancer annotations
+    oci.oraclecloud.com/load-balancer-type: "lb"
+    service.beta.kubernetes.io/oci-load-balancer-shape: "flexible"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-min: "10"
+    service.beta.kubernetes.io/oci-load-balancer-shape-flex-max: "10"
 spec:
   selector:
     app: django-app
   ports:
-    - port: 8000
+    - name: http
+      port: 80
       targetPort: 8000
-  type: ClusterIP
+      protocol: TCP
+  type: LoadBalancer
