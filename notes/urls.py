@@ -21,4 +21,9 @@ urlpatterns = [
     path('api/test/error-400/', views.test_error_400, name='test_error_400'),
     path('api/test/error-500/', views.test_error_500, name='test_error_500'),
     path('api/test/slow/', views.test_slow, name='test_slow'),
+    path('api/test/rate-limiter/', views.test_rate_limiter, name='test_rate_limiter'),
+    
+    # Synchronization demonstration endpoints
+    path('api/test/sync-demo/', views.sync_demo, name='sync_demo'),
+    path('api/metrics/internal/', views.internal_metrics, name='internal_metrics'),
 ]

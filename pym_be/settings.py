@@ -30,6 +30,7 @@ ALLOWED_HOSTS += [
     '127.0.0.1',
     'backend',           # Docker service name for Prometheus scraping
     'pym-backend',       # Docker container name
+    'pym-backend-version-a',  # Version A container name
     '.ngrok-free.app',
     '.ngrok-free.dev',
     '.ngrok.io',

@@ -9,11 +9,17 @@ import json
 from .models import Note, Reply
 from .forms import NoteForm, ReplyForm
 from .applications.model_methods import NoteMethods, ReplyMethods
+from .applications.rate_limiter import db_rate_limiter
+from .applications.request_counter import request_counter
+from .applications.sync_demo import demonstrate_race_condition
 
 
 @require_http_methods(["GET"])
 def get_notes(request):
     """API endpoint to get all notes with pagination"""
+    # Track request with thread-safe counter
+    request_counter.increment('/api/notes/')
+
     page = request.GET.get('page', 1)
     per_page = request.GET.get('per_page', 8)
 
@@ -44,6 +50,9 @@ def get_notes(request):
 @require_http_methods(["GET"])
 def get_note_detail(request, note_id):
     """API endpoint to get a single note with its replies"""
+    # Track request with thread-safe counter
+    request_counter.increment(f'/api/notes/{note_id}/')
+
     note = get_object_or_404(Note, id=note_id)
 
     replies_data = []
@@ -73,6 +82,17 @@ def get_note_detail(request, note_id):
 @require_http_methods(["POST"])
 def submit_note(request):
     """API endpoint to submit a new note"""
+    # Track request with thread-safe counter
+    request_counter.increment('/api/notes/submit/')
+
+    # Apply rate limiting using semaphore (limits concurrent database writes)
+    # Use blocking=False to return 429 immediately when at capacity (better for testing)
+    if not db_rate_limiter.acquire(blocking=False):
+        return JsonResponse({
+            'success': False,
+            'error': 'Rate limit exceeded. Too many concurrent requests.'
+        }, status=429)
+
     try:
         data = json.loads(request.body)
 
@@ -94,6 +114,10 @@ def submit_note(request):
                 note.author_name = ''
             else:
                 note.is_anonymous = False
+
+            # Simulate database write time (helps with rate limiter testing)
+            import time
+            time.sleep(0.2)  # 200ms delay to simulate database write
 
             note.save()
 
@@ -122,12 +146,26 @@ def submit_note(request):
             'success': False,
             'error': str(e)
         }, status=500)
+    finally:
+        # Always release semaphore, even if error occurs
+        db_rate_limiter.release()
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def submit_reply(request, note_id):
     """API endpoint to submit a reply to a note"""
+    # Track request with thread-safe counter
+    request_counter.increment(f'/api/notes/{note_id}/replies/')
+
+    # Apply rate limiting using semaphore (limits concurrent database writes)
+    # Use blocking=False to return 429 immediately when at capacity (better for testing)
+    if not db_rate_limiter.acquire(blocking=False):
+        return JsonResponse({
+            'success': False,
+            'error': 'Rate limit exceeded. Too many concurrent requests.'
+        }, status=429)
+
     try:
         note = get_object_or_404(Note, id=note_id)
         data = json.loads(request.body)
@@ -151,6 +189,10 @@ def submit_reply(request, note_id):
                 reply.author_name = ''
             else:
                 reply.is_anonymous = False
+
+            # Simulate database write time (helps with rate limiter testing)
+            import time
+            time.sleep(0.2)  # 200ms delay to simulate database write
 
             reply.save()
 
@@ -179,6 +221,9 @@ def submit_reply(request, note_id):
             'success': False,
             'error': str(e)
         }, status=500)
+    finally:
+        # Always release semaphore, even if error occurs
+        db_rate_limiter.release()
 
 
 @require_http_methods(["GET"])
@@ -359,4 +404,110 @@ def test_slow(request):
     return JsonResponse({
         'success': True,
         'message': f'Slow response after {delay:.2f}s delay'
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def test_rate_limiter(request):
+    """
+    Test endpoint specifically for rate limiter testing.
+    Simulates a slow database operation (500ms) to better demonstrate rate limiting.
+    This endpoint is protected by the rate limiter semaphore.
+    """
+    # Track request
+    request_counter.increment('/api/test/rate-limiter/')
+
+    # Apply rate limiting using semaphore (max 2 concurrent per worker)
+    # With 2 workers, total capacity = 4 concurrent operations
+    # Use blocking=False to return 429 immediately when at capacity
+    if not db_rate_limiter.acquire(blocking=False):
+        return JsonResponse({
+            'success': False,
+            'error': 'Rate limit exceeded. Too many concurrent requests.',
+            'status': 'rate_limited',
+            'message': 'Semaphore at capacity (2 concurrent operations max per worker)'
+        }, status=429)
+
+    try:
+        # Simulate slow database operation (1 second)
+        # This ensures requests take long enough to see rate limiting when sending concurrent requests
+        import time
+        time.sleep(1.0)  # 1 second delay to simulate database write
+
+        return JsonResponse({
+            'success': True,
+            'message': 'Request processed successfully',
+            'status': 'success',
+            'processing_time_ms': 500
+        })
+    finally:
+        # Always release semaphore
+        db_rate_limiter.release()
+
+
+# ============== Synchronization Demonstration Endpoints ==============
+
+@require_http_methods(["GET"])
+def sync_demo(request):
+    """
+    Demonstration endpoint showing race conditions with and without mutex.
+
+    This endpoint runs concurrent increment tests on both unsafe and safe counters
+    to demonstrate the importance of synchronization mechanisms.
+
+    Returns:
+        JSON response with comparison of unsafe vs safe counter results
+    """
+    try:
+        results = demonstrate_race_condition()
+        return JsonResponse({
+            'success': True,
+            'demonstration': 'Race Condition with/without Mutex',
+            'results': results,
+            'explanation': {
+                'unsafe_counter': (
+                    'Counter without mutex protection. Multiple threads incrementing '
+                    'simultaneously cause race conditions, resulting in lost updates.'
+                ),
+                'safe_counter': (
+                    'Counter with mutex protection. Only one thread can increment at a time, '
+                    'preventing race conditions and ensuring correct final count.'
+                ),
+                'conclusion': results['demonstration']['conclusion']
+            }
+        })
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+
+@require_http_methods(["GET"])
+def internal_metrics(request):
+    """
+    Internal metrics endpoint showing request counter statistics.
+
+    This endpoint demonstrates the thread-safe request counter using mutex.
+    The counter tracks total requests and per-endpoint counts in a thread-safe manner.
+
+    Returns:
+        JSON response with request counter statistics
+    """
+    stats = request_counter.get_stats()
+    return JsonResponse({
+        'success': True,
+        'metrics': {
+            'total_requests': stats['total_requests'],
+            'unique_endpoints': stats['unique_endpoints'],
+            'endpoint_counts': stats['endpoint_counts']
+        },
+        'synchronization': {
+            'mechanism': 'Mutex (threading.Lock)',
+            'explanation': (
+                'Request counter uses mutex to ensure thread-safe increments. '
+                'Multiple threads can safely increment counters without race conditions.'
+            )
+        }
     })
